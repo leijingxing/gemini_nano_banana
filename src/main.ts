@@ -5,6 +5,7 @@ const dirStatusEl = document.getElementById('dirStatus') as HTMLSpanElement;
 const keyBtn = document.getElementById('keyBtn') as HTMLButtonElement;
 const keyStatusEl = document.getElementById('keyStatus') as HTMLSpanElement;
 const dropZone = document.getElementById('dropZone') as HTMLElement;
+const attachToggle = document.getElementById('attachToggle') as HTMLInputElement;
 const promptInput = document.getElementById('promptInput') as HTMLTextAreaElement;
 const generateBtn = document.getElementById('genBtn') as HTMLButtonElement;
 const gallery = document.getElementById('gallery') as HTMLElement;
@@ -15,14 +16,21 @@ const DB_NAME = 'gemini-helper';
 const STORE_NAME = 'handles';
 const DIR_HANDLE_KEY = 'dir-handle';
 const MAX_INITIAL_FILES = 60;
+const MAX_CONTEXT_ASSETS = 6;
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let apiKey: string | null = null;
 let generating = false;
 let toastTimer: number | undefined;
 const objectUrls = new Set<string>();
+const contextAssets = new Map<string, ContextAsset>();
+let attachImagesToPrompt = false;
 
 const supportsFileSystemAccess = 'showDirectoryPicker' in window;
+
+if (attachToggle) {
+  attachImagesToPrompt = attachToggle.checked;
+}
 
 if (!supportsFileSystemAccess) {
   pickDirBtn.disabled = true;
@@ -42,6 +50,15 @@ keyBtn.addEventListener('click', () => {
 
 generateBtn.addEventListener('click', async () => {
   await generateWithGemini();
+});
+
+attachToggle?.addEventListener('change', () => {
+  attachImagesToPrompt = attachToggle.checked;
+  showToast(
+    attachImagesToPrompt
+      ? 'Pasted images will be attached to Gemini prompts'
+      : 'Gemini prompts will include text only',
+  );
 });
 
 dropZone.addEventListener('dragenter', (event) => {
@@ -81,6 +98,12 @@ interface CardPayload {
   mime: string;
   objectUrl: string;
   path: string;
+}
+
+interface ContextAsset {
+  name: string;
+  mime: string;
+  getBytes: () => Promise<Uint8Array>;
 }
 
 async function handleIncomingFiles(files: File[]) {
@@ -128,6 +151,7 @@ async function saveFileFromBlob(file: File) {
     path: name,
   });
   showToast(`Saved ${name}`);
+  rememberContextAsset(name, blob.type, async () => bytes.slice());
 }
 
 async function pickDirectory() {
@@ -164,7 +188,7 @@ async function ensureDirectory(): Promise<FileSystemDirectoryHandle | null> {
   return null;
 }
 
-async function writeFileToDir(name: string, bytes: Uint8Array) {
+async function writeFileToDir(name: string, bytes: Uint8Array): Promise<FileSystemFileHandle> {
   if (!dirHandle) {
     throw new Error('Directory not selected');
   }
@@ -172,6 +196,7 @@ async function writeFileToDir(name: string, bytes: Uint8Array) {
   const writable = await fileHandle.createWritable();
   await writable.write(bytes);
   await writable.close();
+  return fileHandle;
 }
 
 async function restoreDirectory() {
@@ -229,13 +254,18 @@ async function loadExistingImages() {
       if (!file.type.startsWith('image/')) {
         continue;
       }
+      const mime = file.type || inferMimeFromName(entry.name);
       const objectUrl = URL.createObjectURL(file);
       addCard({
         name: entry.name,
         size: file.size,
-        mime: file.type,
+        mime,
         objectUrl,
         path: entry.name,
+      });
+      rememberContextAsset(entry.name, mime, async () => {
+        const latest = await entry.getFile();
+        return new Uint8Array(await latest.arrayBuffer());
       });
       loaded += 1;
       if (loaded >= MAX_INITIAL_FILES) {
@@ -395,10 +425,11 @@ async function generateWithGemini() {
   try {
     const client = new GoogleGenAI({ apiKey });
     let saved = 0;
+    const parts = await buildPromptParts(prompt);
     const stream = await client.models.generateContentStream({
       model: 'gemini-2.5-flash-image',
       config: { responseModalities: ['IMAGE', 'TEXT'] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts }],
     });
 
     for await (const chunk of stream) {
@@ -423,6 +454,7 @@ async function generateWithGemini() {
         objectUrl: URL.createObjectURL(blob),
         path: name,
       });
+      rememberContextAsset(name, mime, async () => bytes.slice());
       saved += 1;
     }
 
@@ -449,6 +481,84 @@ function base64ToBytes(data: string) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+async function buildPromptParts(prompt: string) {
+  const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [
+    { text: prompt },
+  ];
+  if (!attachImagesToPrompt) {
+    return parts;
+  }
+  const assets = Array.from(contextAssets.values());
+  if (!assets.length) {
+    return parts;
+  }
+
+  for (const asset of assets) {
+    try {
+      const bytes = await asset.getBytes();
+      if (!bytes.length) {
+        continue;
+      }
+      parts.push({
+        inlineData: {
+          mimeType: asset.mime || 'image/png',
+          data: bytesToBase64(bytes),
+        },
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  return parts;
+}
+
+function rememberContextAsset(
+  name: string,
+  mime: string,
+  getBytes: () => Promise<Uint8Array>,
+) {
+  const normalizedMime = mime || inferMimeFromName(name);
+  if (contextAssets.has(name)) {
+    contextAssets.delete(name);
+  }
+  contextAssets.set(name, {
+    name,
+    mime: normalizedMime,
+    getBytes,
+  });
+  while (contextAssets.size > MAX_CONTEXT_ASSETS) {
+    const oldestKey = contextAssets.keys().next().value as string | undefined;
+    if (oldestKey === undefined) {
+      break;
+    }
+    contextAssets.delete(oldestKey);
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  if (bytes.length === 0) {
+    return '';
+  }
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function inferMimeFromName(name: string) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.bmp')) return 'image/bmp';
+  return 'image/png';
 }
 
 function showToast(message: string) {
