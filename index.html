@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Paste & Save Assistant</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <header class="page-header">
+      <h1>Gemini Paste & Save Assistant</h1>
+      <p class="subtitle">
+        Choose a local directory to persist pasted or dropped images. You can also
+        send your prompt to Gemini to generate new images into the same folder.
+      </p>
+    </header>
+
+    <section class="controls">
+      <div class="row">
+        <button id="pickDirBtn" class="primary">Choose Save Directory</button>
+        <span id="dirStatus" class="status">No directory selected</span>
+      </div>
+      <div class="row">
+        <button id="keyBtn">Set GEMINI_API_KEY</button>
+        <span id="keyStatus" class="status">API key not set (memory only)</span>
+      </div>
+    </section>
+
+    <section class="dropzone" id="dropZone">
+      <p>Paste (Ctrl/Command+V) or drop images here to store them as files and preview instantly.</p>
+      <p class="hint">Accepts only image/* formats up to 10MB.</p>
+    </section>
+
+    <section class="prompt-box">
+      <label for="promptInput">Gemini Prompt (optional):</label>
+      <textarea id="promptInput" rows="4" placeholder="Describe the image to generate..."></textarea>
+      <button id="genBtn" class="primary">Generate with Gemini and save</button>
+    </section>
+
+    <section>
+      <h2>Saved Images</h2>
+      <div id="gallery" class="gallery"></div>
+    </section>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
