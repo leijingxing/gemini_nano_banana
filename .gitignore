@@ -1,0 +1,15 @@
+# Node artifacts
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Vite build output
+dist/
+
+# Environment / local config
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
